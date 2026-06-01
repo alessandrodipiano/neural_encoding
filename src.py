@@ -8,26 +8,29 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 
-def load_spikes(path):
+
+def load_spikes(path, headers=2024, clock_hz=10000.0):
+    path = Path(path)
+
     with open(path, "rb") as f:
         hdrchk = f.read(16)
 
         if b"DAN_SPK" in hdrchk:
-            f.seek(828)
+            f.seek(headers)
+            dtype = "<u4"   # DAN_SPK spike times: uint32, little-endian
         else:
             f.seek(0)
 
-        p = str(path)
-
-        if ("mq" in p) or ("film02" in p) or ("film32" in p):
-            dtype = "<u4"   # uint32, little-endian
-        else:
-            dtype = "<i4"   # int32, little-endian
+            p = str(path).lower()
+            if ("mq" in p) or ("film02" in p) or ("film32" in p):
+                dtype = "<u4"
+            else:
+                dtype = "<i4"
 
         events = np.fromfile(f, dtype=dtype)
 
     events = events[events > 0]
-    events_sec = events * 1e-4
+    events_sec = events.astype(float) / clock_hz
 
     return events, events_sec
 
@@ -229,7 +232,7 @@ def retrieve_log(path, filename, channels=None):
 
     flog["spike_files"] = spike_files
 
-    # Load spikes
+    '''# Load spikes
     spikes = []
     for sf in spike_files:
         spk = read_sa0(
@@ -238,7 +241,74 @@ def retrieve_log(path, filename, channels=None):
             remote_refresh_rate=flog["remote_refresh_rate"],
         )
         spikes.append(spk)
+    flog["spikes"] = spikes'''
+
+
+####### added part since there was a naming mismatch
+    spikes = []
+    fixed_spike_files = []
+
+    folder_prefix = path.name
+
+    for sf in spike_files:
+        sf_path = path / sf
+
+        if not sf_path.exists():
+            original_sf = sf
+
+            # First fix: wrong folder prefix
+            # Example:
+            # 000512.d11atune.sa0 -> 000513.d11atune.sa0
+            suffix_start = sf.find("a")
+            if suffix_start != -1:
+                candidate = folder_prefix + sf[suffix_start:]
+                candidate_path = path / candidate
+
+                if candidate_path.exists():
+                    sf = candidate
+                    sf_path = candidate_path
+
+            # Second fix: wrong .sa index
+            # Example:
+            # 000802.c05atune.sa1 -> 000802.c05atune.sa0
+            if not sf_path.exists():
+                base = sf.rsplit(".sa", 1)[0]
+                candidates = sorted(path.glob(base + ".sa*"))
+
+                if len(candidates) == 1:
+                    sf_path = candidates[0]
+                    sf = sf_path.name
+
+            # Third fix: same folder prefix + same middle name, any .sa*
+            if not sf_path.exists():
+                suffix_start = sf.find("a")
+                if suffix_start != -1:
+                    base = folder_prefix + sf[suffix_start:].rsplit(".sa", 1)[0]
+                    candidates = sorted(path.glob(base + ".sa*"))
+
+                    if len(candidates) == 1:
+                        sf_path = candidates[0]
+                        sf = sf_path.name
+
+            if original_sf != sf:
+                print(f"Correcting spike file: {original_sf} -> {sf}")
+
+        if not sf_path.exists():
+            raise FileNotFoundError(f"Could not find spike file {sf} in {path}")
+
+        spk = read_sa0(
+            sf_path,
+            refresh_rate=flog["refresh_rate"],
+            remote_refresh_rate=flog["remote_refresh_rate"],
+        )
+
+        spikes.append(spk)
+        fixed_spike_files.append(sf)
+
     flog["spikes"] = spikes
+    flog["spike_files"] = fixed_spike_files
+
+###################àà
 
     nfiles = len(spike_files)
     data_points = flog["data_points"]
