@@ -1,48 +1,132 @@
 
 
 
-
-import re
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-
-
-
-def load_spikes(path, headers=2024, clock_hz=10000.0):
-    path = Path(path)
-
-    with open(path, "rb") as f:
-        hdrchk = f.read(16)
-
-        if b"DAN_SPK" in hdrchk:
-            f.seek(headers)
-            dtype = "<u4"   # DAN_SPK spike times: uint32, little-endian
-        else:
-            f.seek(0)
-
-            p = str(path).lower()
-            if ("mq" in p) or ("film02" in p) or ("film32" in p):
-                dtype = "<u4"
-            else:
-                dtype = "<i4"
-
-        events = np.fromfile(f, dtype=dtype)
-
-    events = events[events > 0]
-    events_sec = events.astype(float) / clock_hz
-
-    return events, events_sec
-
-
 ############################
 
 #the following functions where taken from the matlba files created by the researcher 
 
 ###############################
 
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+from pathlib import Path
+import struct
+
+
+
 
 HEADER_BYTES = 828
+
+
+
+
+
+
+
+def _read_c_string(raw: bytes) -> str:
+    """
+    Decode fixed-width MATLAB-style char fields.
+    Removes trailing nulls, spaces, and newlines.
+    """
+    return raw.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
+
+
+def fget_hdr_python(path):
+    path = Path(path)
+    raw = path.read_bytes()
+
+    if len(raw) < HEADER_BYTES :
+        raise ValueError(f"{path.name}: file is too small to contain a full header")
+
+    pos = 0
+
+    def read_chars(n):
+        nonlocal pos
+        out = _read_c_string(raw[pos:pos + n])
+        pos += n
+        return out
+
+    def read_int32():
+        nonlocal pos
+        value = struct.unpack_from("<i", raw, pos)[0]
+        pos += 4
+        return value
+
+    file_info = {
+        "Type": read_chars(16),
+        "Version": read_chars(16),
+        "Fname": read_chars(128),
+        "Creator": read_chars(128),
+        "Time": read_chars(32),
+    }
+
+    if file_info["Type"] != "DAN_SPK":
+        raise ValueError(f"{path.name}: bad file type {file_info['Type']!r}")
+
+    pos += 64  # reserved
+
+    data_info = {
+        "ID": read_chars(128),
+        "DataFrom": read_chars(128),
+        "Channel": read_int32(),
+        "SampleRate": read_int32(),
+        "Gain": read_int32(),
+        "DAQMode": read_int32(),
+        "DAQResolution": read_int32(),
+        "DataType": read_int32(),
+        "DataUnit": read_int32(),
+        "TimeMode": read_int32(),
+        "TimeOffset": read_int32(),
+        "ThreshPeakHigh": read_int32(),
+        "ThreshPeakLow": read_int32(),
+        "ThreshValleyHigh": read_int32(),
+        "ThreshValleyLow": read_int32(),
+        "ThreshWidthMax": read_int32(),
+        "ThreshWidthMin": read_int32(),
+    }
+
+    pos += 128  # reserved
+
+    assert pos == HEADER_BYTES 
+
+    return {
+        "FileInfo": file_info,
+        "DataInfo": data_info,
+    }
+
+def fget_spk_python(path, sample_rate=None, return_header=True):
+    path = Path(path)
+    raw = path.read_bytes()
+
+    name = path.name.lower()
+
+    if "mq" in name or "film02" in name or "film32" in name:
+        dtype = np.dtype("<u4")  # MATLAB uint32, little-endian
+    else:
+        dtype = np.dtype("<i4")  # MATLAB int32, little-endian
+
+    has_header = b"DAN_SPK" in raw[:16]
+
+    if has_header:
+        hdr = fget_hdr_python(path)
+        events = np.frombuffer(raw[HEADER_BYTES :], dtype=dtype)
+    else:
+        hdr = None
+        events = np.frombuffer(raw, dtype=dtype)
+
+    if sample_rate is None:
+        if hdr is not None and hdr["DataInfo"]["SampleRate"] > 0:
+            sample_rate = hdr["DataInfo"]["SampleRate"]
+        else:
+            sample_rate = 10000
+
+    spike_times_sec = events.astype(float) / sample_rate
+
+    if return_header:
+        return events, spike_times_sec, hdr
+    else:
+        return events, spike_times_sec
 
 
 def load_log_lines(log_path):
@@ -244,7 +328,6 @@ def retrieve_log(path, filename, channels=None):
     flog["spikes"] = spikes'''
 
 
-####### added part since there was a naming mismatch
     spikes = []
     fixed_spike_files = []
 
@@ -256,9 +339,7 @@ def retrieve_log(path, filename, channels=None):
         if not sf_path.exists():
             original_sf = sf
 
-            # First fix: wrong folder prefix
-            # Example:
-            # 000512.d11atune.sa0 -> 000513.d11atune.sa0
+            
             suffix_start = sf.find("a")
             if suffix_start != -1:
                 candidate = folder_prefix + sf[suffix_start:]
@@ -268,9 +349,7 @@ def retrieve_log(path, filename, channels=None):
                     sf = candidate
                     sf_path = candidate_path
 
-            # Second fix: wrong .sa index
-            # Example:
-            # 000802.c05atune.sa1 -> 000802.c05atune.sa0
+            
             if not sf_path.exists():
                 base = sf.rsplit(".sa", 1)[0]
                 candidates = sorted(path.glob(base + ".sa*"))
@@ -279,7 +358,7 @@ def retrieve_log(path, filename, channels=None):
                     sf_path = candidates[0]
                     sf = sf_path.name
 
-            # Third fix: same folder prefix + same middle name, any .sa*
+            
             if not sf_path.exists():
                 suffix_start = sf.find("a")
                 if suffix_start != -1:
