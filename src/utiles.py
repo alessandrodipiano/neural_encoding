@@ -73,7 +73,7 @@ def compute_sta(spike_files, stim, n_lags, frame_rate):
     return sta_accum / n_total, n_total
 
 
-def compute_r_estimate(stim, kernel):
+def compute_r_estimate(stim, kernel, r0=0.0):
     T, N = stim.shape
     n_lags, N_kernel = kernel.shape
 
@@ -90,7 +90,7 @@ def compute_r_estimate(stim, kernel):
 
             total += np.sum(stimulus_frame * kernel_frame)
 
-        r_est[t] = total
+        r_est[t] = r0 + total
 
     return r_est
 
@@ -98,43 +98,53 @@ def compute_r_estimate(stim, kernel):
 
 
 
-def gaussian_rate_convolution(spike_times, t_start=None, t_end=None, dt=0.001, sigma=0.2):
-    """
-    Gaussian-smoothed firing rate using binning + convolution.
 
-    spike_times : spike times in seconds
-    dt          : bin width in seconds
-    sigma       : Gaussian std in seconds
 
-    returns:
-        t        : time axis
-        rate     : firing rate in spikes/s
-        counts   : binned spike counts
-    """
-    spike_times = np.asarray(spike_times)
+def bin_spikes_to_frames(spike_times_sec, T, frame_rate, stim_onset_sec=0.0):
+    spk_stim_sec = spike_times_sec - stim_onset_sec
+    edges = np.arange(T + 1) / frame_rate
+    counts, _ = np.histogram(spk_stim_sec, bins=edges)
+    return counts
 
-    if t_start is None:
-        t_start = spike_times[0]
-    if t_end is None:
-        t_end = spike_times[-1]
 
-    bins = np.arange(t_start, t_end + dt, dt)
-    counts, edges = np.histogram(spike_times, bins=bins)
-
-    # Convert sigma from seconds to bins
-    sigma_bins = sigma / dt
-
-    # Smooth spike counts
-    smoothed_counts = gaussian_filter1d(
+def smooth_frame_counts(counts, frame_rate, sigma_sec=0.05):
+    sigma_frames = sigma_sec * frame_rate
+    return gaussian_filter1d(
         counts.astype(float),
-        sigma=sigma_bins,
+        sigma=sigma_frames,
         mode="constant"
-    )
+    ) * frame_rate
 
-    # Convert counts/bin to spikes/second
-    rate = smoothed_counts / dt
 
-    # Bin centers
-    t = edges[:-1] + dt / 2
 
-    return t, rate, counts
+def shuffle_test(r_est, rate_test, n_shuffle=500, seed=0):
+    rng = np.random.default_rng(seed)
+
+    r_est = np.asarray(r_est)
+    rate_test = np.asarray(rate_test)
+
+    valid = np.isfinite(r_est) & np.isfinite(rate_test)
+
+    x = r_est[valid]
+    y = rate_test[valid]
+
+    real_corr = np.corrcoef(x, y)[0, 1]
+
+    shuf_corrs = []
+
+    for _ in range(n_shuffle):
+        shift = rng.integers(1, len(rate_test))  # avoid zero shift
+
+        rate_shuf = np.roll(rate_test, shift)
+
+        # Re-apply the same valid mask after shuffling
+        y_shuf = rate_shuf[valid]
+
+        shuf_corr = np.corrcoef(x, y_shuf)[0, 1]
+        shuf_corrs.append(shuf_corr)
+
+    shuf_corrs = np.array(shuf_corrs)
+
+
+
+    return real_corr, shuf_corrs
