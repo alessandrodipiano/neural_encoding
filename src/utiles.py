@@ -100,10 +100,10 @@ def compute_r_estimate(stim, kernel, r0=0.0):
 
 
 
-def bin_spikes_to_frames(spike_times_sec, T, frame_rate, stim_onset_sec=0.0):
-    spk_stim_sec = spike_times_sec - stim_onset_sec
+def bin_spikes_to_frames(spike_times_sec, T, frame_rate):
+     
     edges = np.arange(T + 1) / frame_rate
-    counts, _ = np.histogram(spk_stim_sec, bins=edges)
+    counts, _ = np.histogram(spike_times_sec, bins=edges)
     return counts
 
 
@@ -117,34 +117,3 @@ def smooth_frame_counts(counts, frame_rate, sigma_sec=0.05):
 
 
 
-def shuffle_test(r_est, rate_test, n_shuffle=500, seed=0):
-    rng = np.random.default_rng(seed)
-
-    r_est = np.asarray(r_est)
-    rate_test = np.asarray(rate_test)
-
-    valid = np.isfinite(r_est) & np.isfinite(rate_test)
-
-    x = r_est[valid]
-    y = rate_test[valid]
-
-    real_corr = np.corrcoef(x, y)[0, 1]
-
-    shuf_corrs = []
-
-    for _ in range(n_shuffle):
-        shift = rng.integers(1, len(rate_test))  # avoid zero shift
-
-        rate_shuf = np.roll(rate_test, shift)
-
-        # Re-apply the same valid mask after shuffling
-        y_shuf = rate_shuf[valid]
-
-        shuf_corr = np.corrcoef(x, y_shuf)[0, 1]
-        shuf_corrs.append(shuf_corr)
-
-    shuf_corrs = np.array(shuf_corrs)
-
-
-
-    return real_corr, shuf_corrs
